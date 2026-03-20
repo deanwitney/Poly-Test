@@ -7,37 +7,28 @@ import zoneinfo
 import hashlib
 from datetime import datetime
 
-# --- 1. MANDATORY CONFIG (Must be at the very top) ---
+# --- 1. MANDATORY CONFIG ---
 st.set_page_config(page_title="BTC Master Strategy Lab", layout="wide")
 ET_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 
-# --- 2. SECURITY LAYER (Corrected for Password: ) ---
+# --- 2. SECURITY LAYER ---
 def check_password():
-    """Returns True if the user had the correct password."""
-    # THE FIX: This is the actual SHA-256 hash for ""
     CORRECT_HASH = "7123d367e354baefc7131376b2e3bbab1055dd45ba920b9f1ee2047cb1b72efc"
-
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
-
     if st.session_state["password_correct"]:
         return True
-
     st.title("🛡️ BTC Strategy Lab Login")
     password_input = st.text_input("Enter Dashboard Password", type="password")
-    
     if st.button("Unlock Dashboard"):
-        # Hash the input and compare
         input_hash = hashlib.sha256(password_input.strip().encode()).hexdigest()
         if input_hash == CORRECT_HASH:
             st.session_state["password_correct"] = True
             st.rerun()
         else:
-            st.error("😕 Password incorrect. Please try again.")
-    
+            st.error("😕 Password incorrect.")
     return False
 
-# Stop execution if not authorized
 if not check_password():
     st.stop()
 
@@ -56,23 +47,32 @@ for key, val in {
 def fetch_binance_history(limit=2000):
     url = "https://api.binance.com/api/v3/klines"
     all_data, remaining, end_time = [], limit, None
-    while remaining > 0:
-        f_limit = min(remaining, 1000)
-        params = {"symbol": "BTCUSDT", "interval": "5m", "limit": f_limit}
-        if end_time: params["endTime"] = end_time
-        try:
-            res = requests.get(url, params=params).json()
-            if not res or not isinstance(res, list): break
-            all_data = res + all_data
-            end_time = res[0][0] - 1
-            remaining -= len(res)
-        except: break
+    with st.spinner(f"📡 Downloading {limit} intervals from Binance..."):
+        while remaining > 0:
+            f_limit = min(remaining, 1000)
+            params = {"symbol": "BTCUSDT", "interval": "5m", "limit": f_limit}
+            if end_time: params["endTime"] = end_time
+            try:
+                res = requests.get(url, params=params).json()
+                if not res or not isinstance(res, list) or len(res) == 0: break
+                all_data = res + all_data
+                end_time = res[0][0] - 1
+                remaining -= len(res)
+            except: break
+    
+    if not all_data:
+        return pd.DataFrame() # Return empty if fails
+
     df = pd.DataFrame(all_data, columns=['ot','o','h','l','c','v','ct','qv','nt','tbb','tbq','i'])
     df['Outcome'] = df.apply(lambda x: "Up" if float(x['c']) >= float(x['o']) else "Down", axis=1)
     df['Time'] = pd.to_datetime(df['ot'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(ET_TIMEZONE)
     return df[['Time', 'Outcome', 'o', 'c']]
 
 def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
+    # THE FIX: If dataset is empty, exit immediately to avoid IndexError
+    if dataset is None or dataset.empty:
+        return None, 0, 0, 0, 0, 0, 0, None, None
+        
     bankroll, current_bet, history = s_bankroll, i_bet, []
     pending, w, l, ml, active_l = None, 0, 0, 0, 0
     peak_bankroll, max_drawdown = s_bankroll, 0
@@ -112,7 +112,7 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
         history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": action, "Bet On": bet_dir})
     return pd.DataFrame(history), w, l, ml, bankroll, bankroll, max_drawdown, mdd_start, mdd_end
 
-# --- 5. SIDEBAR & UI ---
+# --- 5. UI ---
 st.sidebar.title("🎮 Control Panel")
 mode = st.sidebar.radio("Mode", ["Backtest & Optimize", "Live Mode"])
 st.sidebar.markdown("---")
@@ -128,7 +128,7 @@ safety_floor_pct = st.sidebar.slider("Safety Floor (%)", 0, 100, 20)
 dd_limit_pct = st.sidebar.number_input("Max DD Limit (%)", value=st.session_state.sb_dd_limit)
 st.session_state.sb_dd_limit = dd_limit_pct
 
-# --- 6. MAIN APP MODES ---
+# --- 6. APP MODES ---
 if mode == "Backtest & Optimize":
     st.title("📊 Backtest & Optimization")
     c1, c2 = st.columns(2)
@@ -136,28 +136,25 @@ if mode == "Backtest & Optimize":
         num_f = st.number_input("Fetch Count", 500, 20000, 2000)
         if st.button("📡 Fetch Data", use_container_width=True):
             st.session_state.stored_df = fetch_binance_history(num_f)
+            if st.session_state.stored_df.empty:
+                st.error("❌ Binance returned no data. Try a smaller Fetch Count or check your connection.")
+
     with c2:
         if st.button("🚀 Optimize Strategy", use_container_width=True):
-            if st.session_state.stored_df is not None:
+            if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
                 results = []
                 max_dd_allowed = sb_bankroll * (dd_limit_pct / 100) if dd_limit_pct > 0 else 999999
                 for s in range(1, 7):
                     for b in [10, 25, 50, 100]:
                         for l in range(1, 10):
                             _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat)
-                            if m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
+                            if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
                 else: st.session_state.best_params_found = "None"
-    if st.session_state.best_params_found is not None:
-        if not isinstance(st.session_state.best_params_found, str):
-            best = st.session_state.best_params_found
-            st.success(f"🏆 Best: Profit **${best['P']:,.2f}** | Max DD: **${best['DD']:,.2f}**")
-            if st.button("✅ USE THESE PARAMETERS", use_container_width=True):
-                st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l = int(best['B']), int(best['S']), int(best['L'])
-                st.session_state.best_params_found = None
-                st.rerun()
-    if st.session_state.stored_df is not None:
+            else: st.warning("⚠️ Fetch data first before optimizing!")
+
+    if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
         res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat)
         if res_df is not None:
             col1, col2, col3, col4 = st.columns(4)
@@ -169,18 +166,18 @@ if mode == "Backtest & Optimize":
             if mdd > 0: fig.add_vrect(x0=mdd_start, x1=mdd_end, fillcolor="red", opacity=0.2, annotation_text="Max Drawdown Area")
             fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, width='stretch')
-            with st.expander("📄 View Raw Data Log"):
-                st.dataframe(res_df.iloc[::-1], width='stretch')
         else: st.error("💥 ACCOUNT BUSTED")
+    else:
+        st.info("💡 Click **'Fetch Data'** to download Bitcoin history and begin analysis.")
+
+# --- LIVE MODE (Kept original logic) ---
 else:
     st.title("⚡ Live Strategy Bot")
     if not st.session_state.live_active:
         if st.button("🚀 ACTIVATE LIVE BOT"):
             st.session_state.live_active = True
-            st.session_state.live_bankroll = sb_bankroll
-            st.session_state.live_current_bet = sb_init_bet
-            st.session_state.live_pending_bet = None
-            st.session_state.live_loss_count = 0
+            st.session_state.live_bankroll, st.session_state.live_current_bet = sb_bankroll, sb_init_bet
+            st.session_state.live_pending_bet, st.session_state.live_loss_count = None, 0
             st.rerun()
     else:
         if st.button("🛑 DEACTIVATE"):
@@ -189,31 +186,31 @@ else:
     if st.session_state.live_active:
         st.info("Bot logic running... Refreshing every 30s")
         live_data = fetch_binance_history(20)
-        latest = live_data.iloc[-1]
-        if st.session_state.last_processed_time != latest['Time']:
-            actual = latest['Outcome']
-            if st.session_state.live_pending_bet:
-                st.session_state.live_bankroll -= st.session_state.live_current_bet
-                if st.session_state.live_pending_bet == actual:
-                    st.session_state.live_bankroll += (st.session_state.live_current_bet * 2)
-                    st.session_state.live_current_bet, st.session_state.live_loss_count = sb_init_bet, 0
-                    last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
-                    st.session_state.live_pending_bet = actual if (len(set(last_n)) == 1 and sb_strat == "Follow Streak") else None
-                else:
-                    st.session_state.live_loss_count += 1
-                    if sb_strat == "Follow Streak":
-                        st.session_state.live_pending_bet, st.session_state.live_current_bet = None, sb_init_bet
+        if not live_data.empty:
+            latest = live_data.iloc[-1]
+            if st.session_state.last_processed_time != latest['Time']:
+                actual = latest['Outcome']
+                if st.session_state.live_pending_bet:
+                    st.session_state.live_bankroll -= st.session_state.live_current_bet
+                    if st.session_state.live_pending_bet == actual:
+                        st.session_state.live_bankroll += (st.session_state.live_current_bet * 2)
+                        st.session_state.live_current_bet, st.session_state.live_loss_count = sb_init_bet, 0
+                        last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
+                        st.session_state.live_pending_bet = actual if (len(set(last_n)) == 1 and sb_strat == "Follow Streak") else None
                     else:
-                        if st.session_state.live_loss_count >= sb_max_l:
-                            st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
+                        st.session_state.live_loss_count += 1
+                        if sb_strat == "Follow Streak":
+                            st.session_state.live_pending_bet, st.session_state.live_current_bet = None, sb_init_bet
                         else:
-                            st.session_state.live_current_bet *= 2
-            if not st.session_state.live_pending_bet:
-                last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
-                if len(set(last_n)) == 1:
-                    st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
-            st.session_state.last_processed_time = latest['Time']
-            st.session_state.live_history.append({"Time": latest['Time'], "Bankroll": st.session_state.live_bankroll, "Result": actual, "Bet On": st.session_state.live_pending_bet})
+                            if st.session_state.live_loss_count >= sb_max_l:
+                                st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
+                            else: st.session_state.live_current_bet *= 2
+                if not st.session_state.live_pending_bet:
+                    last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
+                    if len(set(last_n)) == 1:
+                        st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
+                st.session_state.last_processed_time = latest['Time']
+                st.session_state.live_history.append({"Time": latest['Time'], "Bankroll": st.session_state.live_bankroll, "Result": actual, "Bet On": st.session_state.live_pending_bet})
         c1, c2, c3 = st.columns(3)
         c1.metric("Live Bankroll", f"${st.session_state.live_bankroll:,.2f}")
         c2.metric("Next Bet", f"${st.session_state.live_current_bet:,.2f}" if st.session_state.live_pending_bet else "$0.00")
