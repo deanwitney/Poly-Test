@@ -149,9 +149,7 @@ st.sidebar.markdown("### Bankroll & Sizing")
 sb_bankroll = st.sidebar.number_input("Starting Bankroll ($)", value=float(st.session_state.sb_bankroll))
 sb_scale_bet = st.sidebar.checkbox("Scale Base Bet as % of Bankroll", value=st.session_state.sb_scale_bet, help="If checked, your base bet will grow as your bankroll grows.")
 
-# Toggle between $ and % input seamlessly
 if sb_scale_bet:
-    # If switching from $ to %, set a sensible default like 1.0% to avoid betting 10% by accident
     current_val = float(st.session_state.sb_init_bet) if float(st.session_state.sb_init_bet) <= 100 else 1.0
     sb_init_bet = st.sidebar.number_input("Base Bet (%)", value=current_val, step=0.1)
 else:
@@ -214,12 +212,20 @@ if mode == "Backtest & Optimize":
                 streaks_to_test = range(3, 6) 
                 doubles_to_test = range(1, 4)
                 
+                # --- UPDATED OPTIMIZER ARRAY ---
                 if sb_scale_bet:
-                    # Tests 0.25%, 0.5%, 1%, 1.5%, 2%
+                    # Tests 0.25%, 0.5%, 1%, 1.5%, 2% (percentages passed as-is to engine)
                     bets_to_test = [0.25, 0.5, 1.0, 1.5, 2.0]
                     bet_label = "Base Bet (%)"
                 else:
-                    bets_to_test = [10, 25, 50, 100] # Flat Dollars
+                    # Tests 0.25%, 0.5%, 1%, 1.5%, 2% of starting bankroll (passed as flat dollars to engine)
+                    bets_to_test = [
+                        sb_bankroll * 0.0025,
+                        sb_bankroll * 0.005,
+                        sb_bankroll * 0.010,
+                        sb_bankroll * 0.015,
+                        sb_bankroll * 0.020
+                    ]
                     bet_label = "Base Bet ($)"
                 
                 total_runs = len(streaks_to_test) * len(bets_to_test) * len(doubles_to_test)
