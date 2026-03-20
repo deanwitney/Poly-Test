@@ -35,8 +35,9 @@ if not check_password():
 # --- 3. INITIALIZE SESSION STATE ---
 for key, val in {
     'sb_init_bet': 10, 'sb_streak': 2, 'sb_max_l': 6, 
-    'sb_strat': "Follow Streak", 'sb_dd_limit': 100, 'sb_share_price': 50, # NEW DEFAULT
-    'best_params_found': None, 'stored_df': None,
+    'sb_strat': "Follow Streak", 'sb_dd_limit': 100, 
+    'sb_share_price': 50, 'sb_fee_pct': 1.5, # NEW FEE DEFAULT
+    'best_params_found': None, 'stored_df': pd.DataFrame(),
     'live_active': False, 'live_bankroll': 1000.0, 'live_history': [],
     'last_processed_time': None, 'live_pending_bet': None,
     'live_current_bet': 0.0, 'live_loss_count': 0
@@ -46,9 +47,11 @@ for key, val in {
 # --- 4. CSV DATA LOADER ---
 def load_historical_data(limit=2000):
     filename = "btc_historical_data.csv"
+    
     if not os.path.exists(filename):
         st.error(f"❌ File '{filename}' not found. Please ensure it is in the same folder as this script on GitHub.")
         return pd.DataFrame()
+
     with st.spinner(f"📂 Loading up to {limit} data points from CSV..."):
         try:
             df = pd.read_csv(filename)
@@ -61,8 +64,8 @@ def load_historical_data(limit=2000):
             st.error(f"⚠️ Error reading CSV: {e}")
             return pd.DataFrame()
 
-# --- 5. SIMULATION ENGINE (Now with Polymarket Pricing) ---
-def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_price):
+# --- 5. SIMULATION ENGINE (Now with Fee Deductions) ---
+def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_price, fee_pct):
     if dataset is None or dataset.empty:
         return None, 0, 0, 0, 0, 0, 0, None, None
 
@@ -70,8 +73,7 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
     pending, w, l, ml, active_l = None, 0, 0, 0, 0
     peak_bankroll, max_drawdown = s_bankroll, 0
     mdd_start, mdd_end = dataset.iloc[0]['Time'], dataset.iloc[0]['Time']
-    peak_time = mdd_start
-    outcomes_list = []
+    peak_time, outcomes_list = mdd_start, []
 
     for _, row in dataset.iterrows():
         actual = row['Outcome']
@@ -83,9 +85,12 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
             if bankroll < current_bet: return None, 0, 0, 0, 0, 0, 0, None, None
             bankroll -= current_bet
             if pending == actual:
-                # NEW PAYOUT LOGIC: $1 per share bought
-                payout = current_bet * (100 / share_price) 
-                bankroll += payout
+                # RAW PAYOUT: $1 per share
+                raw_payout = current_bet * (100 / share_price)
+                # ACTUAL PAYOUT: Deduct the fee/spread cut
+                actual_payout = raw_payout * (1 - (fee_pct / 100))
+                
+                bankroll += actual_payout
                 w += 1; active_l = 0; current_bet = i_bet
                 
                 last_n = outcomes_list[-int(s_trigger):]
@@ -95,9 +100,9 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
             else:
                 l += 1; active_l += 1; ml = max(ml, active_l)
                 if strat == "Follow Streak":
-                    pending = None; current_bet = i_bet; active_l = 0
+                    pending, current_bet, active_l = None, i_bet, 0
                 else:
-                    if active_l >= m_loss: current_bet = i_bet; active_l = 0; pending = None
+                    if active_l >= m_loss: pending, current_bet, active_l = None, i_bet, 0
                     else: current_bet *= 2
         
         if bankroll > peak_bankroll: peak_bankroll, peak_time = bankroll, row['Time']
@@ -122,15 +127,17 @@ st.sidebar.markdown("---")
 sb_bankroll = st.sidebar.number_input("Starting Bankroll ($)", value=1000)
 sb_init_bet = st.sidebar.number_input("Initial Bet ($)", value=st.session_state.sb_init_bet)
 
-# NEW: SHARE PRICE INPUT
-sb_share_price = st.sidebar.number_input("Avg Share Price (¢)", value=st.session_state.sb_share_price, min_value=1, max_value=99, help="How much you pay for a YES/NO share on Polymarket.")
+st.sidebar.markdown("### 💱 Market Conditions")
+sb_share_price = st.sidebar.number_input("Avg Share Price (¢)", value=st.session_state.sb_share_price, min_value=1, max_value=99)
+sb_fee_pct = st.sidebar.number_input("Platform Cut / Fee (%)", value=st.session_state.sb_fee_pct, step=0.1, format="%.2f", help="Deducted from your total payout on a win. (e.g. 1.5%)")
 
 sb_streak = st.sidebar.number_input("Streak Trigger", value=st.session_state.sb_streak, min_value=1)
 sb_max_l = st.sidebar.number_input("Max Doubles", value=st.session_state.sb_max_l, min_value=1)
 sb_strat = st.sidebar.selectbox("Strategy Type", ["Follow Streak", "Anti-Streak (Bet Opp)"], 
                                index=0 if st.session_state.sb_strat == "Follow Streak" else 1)
 
-st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l, st.session_state.sb_strat, st.session_state.sb_share_price = sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price
+st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l, st.session_state.sb_strat = sb_init_bet, sb_streak, sb_max_l, sb_strat
+st.session_state.sb_share_price, st.session_state.sb_fee_pct = sb_share_price, sb_fee_pct
 
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Constraints")
@@ -142,12 +149,11 @@ st.session_state.sb_dd_limit = dd_limit_pct
 if mode == "Backtest & Optimize":
     st.title("📊 CSV Backtest & Optimization")
     
-    # Calculate and display the actual multiplier
-    multiplier = 100 / sb_share_price
-    st.info(f"💡 At **{sb_share_price}¢** per share, your payout multiplier is **{multiplier:.2f}x**. A $10 bet pays out **${10*multiplier:.2f}** total.")
-    if sb_share_price > 50:
-        st.warning(f"⚠️ **Math Warning:** Because shares cost more than 50¢, standard doubling after a loss will result in smaller recoveries. If you buy at 67¢ or higher, doubling will actually lose money on a win.")
-
+    # Show the user exactly what their payout math looks like now
+    raw_mult = 100 / sb_share_price
+    actual_mult = raw_mult * (1 - (sb_fee_pct / 100))
+    st.info(f"💡 At **{sb_share_price}¢** with a **{sb_fee_pct}%** fee, your real payout multiplier is **{actual_mult:.3f}x**. A $1 bet wins **${actual_mult:.2f}**.")
+    
     c1, c2 = st.columns(2)
     with c1:
         num_f = st.number_input("Data Points to Load", 500, 100000, 2000)
@@ -161,8 +167,7 @@ if mode == "Backtest & Optimize":
                 for s in range(1, 7):
                     for b in [10, 25, 50, 100]:
                         for l in range(1, 10):
-                            # Passed sb_share_price to optimizer
-                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat, sb_share_price)
+                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat, sb_share_price, sb_fee_pct)
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
@@ -180,8 +185,7 @@ if mode == "Backtest & Optimize":
                 st.rerun()
 
     if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
-        # Passed sb_share_price to main graph
-        res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price)
+        res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price, sb_fee_pct)
         if res_df is not None:
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Final Bankroll", f"${final:,.2f}")
@@ -238,9 +242,11 @@ else:
                 if st.session_state.live_pending_bet:
                     st.session_state.live_bankroll -= st.session_state.live_current_bet
                     if st.session_state.live_pending_bet == actual:
-                        # NEW LIVE PAYOUT LOGIC
-                        payout = st.session_state.live_current_bet * (100 / sb_share_price)
-                        st.session_state.live_bankroll += payout
+                        # NEW LIVE PAYOUT LOGIC WITH FEES
+                        raw_payout = st.session_state.live_current_bet * (100 / sb_share_price)
+                        actual_payout = raw_payout * (1 - (sb_fee_pct / 100))
+                        
+                        st.session_state.live_bankroll += actual_payout
                         st.session_state.live_current_bet = sb_init_bet
                         st.session_state.live_loss_count = 0
                         
