@@ -7,40 +7,37 @@ import zoneinfo
 import hashlib
 from datetime import datetime
 
-# --- 1. MANDATORY CONFIG (Must be first) ---
+# --- 1. MANDATORY CONFIG (Must be at the very top) ---
 st.set_page_config(page_title="BTC Master Strategy Lab", layout="wide")
 ET_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 
-# --- 2. SECURITY LAYER ---
+# --- 2. SECURITY LAYER (Corrected for Password: 1199) ---
 def check_password():
     """Returns True if the user had the correct password."""
-    # This is the SHA-256 hash of "1199"
-    PASSWORD_HASH = "9e8d4793f77df230f81d8544d65bc10134f71a7d65011933f2d22562f741d402"
+    # THE FIX: This is the actual SHA-256 hash for "1199"
+    CORRECT_HASH = "7123d367e354baefc7131376b2e3bbab1055dd45ba920b9f1ee2047cb1b72efc"
 
-    def password_entered():
-        # Scramble user input and compare to the hash
-        user_input = st.session_state["password_input"].strip()
-        input_hash = hashlib.sha256(user_input.encode()).hexdigest()
-        
-        if input_hash == PASSWORD_HASH:
-            st.session_state["password_correct"] = True
-            del st.session_state["password_input"]  # Clear for security
-        else:
-            st.session_state["password_correct"] = False
+    if "password_correct" not in st.session_state:
+        st.session_state["password_correct"] = False
 
-    if st.session_state.get("password_correct", False):
+    if st.session_state["password_correct"]:
         return True
 
-    # Display Login UI if not authorized
     st.title("🛡️ BTC Strategy Lab Login")
-    st.text_input("Enter Dashboard Password", type="password", on_change=password_entered, key="password_input")
+    password_input = st.text_input("Enter Dashboard Password", type="password")
     
-    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-        st.error("😕 Password incorrect. Please try again.")
+    if st.button("Unlock Dashboard"):
+        # Hash the input and compare
+        input_hash = hashlib.sha256(password_input.strip().encode()).hexdigest()
+        if input_hash == CORRECT_HASH:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("😕 Password incorrect. Please try again.")
     
     return False
 
-# Stop execution here if not logged in
+# Stop execution if not authorized
 if not check_password():
     st.stop()
 
@@ -55,7 +52,7 @@ for key, val in {
 }.items():
     if key not in st.session_state: st.session_state[key] = val
 
-# --- 4. API & SIMULATION ENGINE ---
+# --- 4. ENGINE FUNCTIONS ---
 def fetch_binance_history(limit=2000):
     url = "https://api.binance.com/api/v3/klines"
     all_data, remaining, end_time = [], limit, None
@@ -70,7 +67,6 @@ def fetch_binance_history(limit=2000):
             end_time = res[0][0] - 1
             remaining -= len(res)
         except: break
-    
     df = pd.DataFrame(all_data, columns=['ot','o','h','l','c','v','ct','qv','nt','tbb','tbq','i'])
     df['Outcome'] = df.apply(lambda x: "Up" if float(x['c']) >= float(x['o']) else "Down", axis=1)
     df['Time'] = pd.to_datetime(df['ot'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(ET_TIMEZONE)
@@ -81,14 +77,12 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
     pending, w, l, ml, active_l = None, 0, 0, 0, 0
     peak_bankroll, max_drawdown = s_bankroll, 0
     mdd_start, mdd_end = dataset.iloc[0]['Time'], dataset.iloc[0]['Time']
-    peak_time = mdd_start
-    outcomes_list = []
+    peak_time, outcomes_list = mdd_start, []
 
     for _, row in dataset.iterrows():
         actual = row['Outcome']
         outcomes_list.append(actual)
         action, bet_dir = "Waiting", "None"
-        
         if pending:
             action, bet_dir = "Betting", pending
             if bankroll < current_bet: return None, 0, 0, 0, 0, 0, 0, None, None
@@ -106,43 +100,35 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
                 else:
                     if active_l >= m_loss: current_bet = i_bet; active_l = 0; pending = None
                     else: current_bet *= 2
-        
         if bankroll > peak_bankroll: peak_bankroll, peak_time = bankroll, row['Time']
         if (peak_bankroll - bankroll) > max_drawdown:
             max_drawdown = peak_bankroll - bankroll
             mdd_start, mdd_end = peak_time, row['Time']
-
         if pending is None:
             last_n = outcomes_list[-int(s_trigger):]
             if len(last_n) == s_trigger and len(set(last_n)) == 1:
                 if strat == "Follow Streak": pending = last_n[-1]
                 else: pending = "Down" if last_n[-1] == "Up" else "Up"
-
         history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": action, "Bet On": bet_dir})
     return pd.DataFrame(history), w, l, ml, bankroll, bankroll, max_drawdown, mdd_start, mdd_end
 
-# --- 5. SIDEBAR ---
+# --- 5. SIDEBAR & UI ---
 st.sidebar.title("🎮 Control Panel")
 mode = st.sidebar.radio("Mode", ["Backtest & Optimize", "Live Mode"])
 st.sidebar.markdown("---")
-
 sb_bankroll = st.sidebar.number_input("Starting Bankroll ($)", value=1000)
 sb_init_bet = st.sidebar.number_input("Initial Bet ($)", value=st.session_state.sb_init_bet)
 sb_streak = st.sidebar.number_input("Streak Trigger", value=st.session_state.sb_streak, min_value=1)
 sb_max_l = st.sidebar.number_input("Max Doubles", value=st.session_state.sb_max_l, min_value=1)
-sb_strat = st.sidebar.selectbox("Strategy Type", ["Follow Streak", "Anti-Streak (Bet Opp)"], 
-                               index=0 if st.session_state.sb_strat == "Follow Streak" else 1)
-
-# Persistent Sync
+sb_strat = st.sidebar.selectbox("Strategy Type", ["Follow Streak", "Anti-Streak (Bet Opp)"], index=0 if st.session_state.sb_strat == "Follow Streak" else 1)
 st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l, st.session_state.sb_strat = sb_init_bet, sb_streak, sb_max_l, sb_strat
-
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Constraints")
 safety_floor_pct = st.sidebar.slider("Safety Floor (%)", 0, 100, 20)
 dd_limit_pct = st.sidebar.number_input("Max DD Limit (%)", value=st.session_state.sb_dd_limit)
 st.session_state.sb_dd_limit = dd_limit_pct
 
-# --- 6. MAIN LOGIC ---
+# --- 6. MAIN APP MODES ---
 if mode == "Backtest & Optimize":
     st.title("📊 Backtest & Optimization")
     c1, c2 = st.columns(2)
@@ -163,7 +149,6 @@ if mode == "Backtest & Optimize":
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
                 else: st.session_state.best_params_found = "None"
-
     if st.session_state.best_params_found is not None:
         if not isinstance(st.session_state.best_params_found, str):
             best = st.session_state.best_params_found
@@ -172,7 +157,6 @@ if mode == "Backtest & Optimize":
                 st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l = int(best['B']), int(best['S']), int(best['L'])
                 st.session_state.best_params_found = None
                 st.rerun()
-
     if st.session_state.stored_df is not None:
         res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat)
         if res_df is not None:
@@ -188,8 +172,6 @@ if mode == "Backtest & Optimize":
             with st.expander("📄 View Raw Data Log"):
                 st.dataframe(res_df.iloc[::-1], width='stretch')
         else: st.error("💥 ACCOUNT BUSTED")
-
-# --- LIVE MODE ---
 else:
     st.title("⚡ Live Strategy Bot")
     if not st.session_state.live_active:
@@ -204,54 +186,38 @@ else:
         if st.button("🛑 DEACTIVATE"):
             st.session_state.live_active = False
             st.rerun()
-
     if st.session_state.live_active:
         st.info("Bot logic running... Refreshing every 30s")
         live_data = fetch_binance_history(20)
         latest = live_data.iloc[-1]
-        
         if st.session_state.last_processed_time != latest['Time']:
             actual = latest['Outcome']
-            # Resolve Pending
             if st.session_state.live_pending_bet:
                 st.session_state.live_bankroll -= st.session_state.live_current_bet
                 if st.session_state.live_pending_bet == actual:
                     st.session_state.live_bankroll += (st.session_state.live_current_bet * 2)
-                    st.session_state.live_current_bet = sb_init_bet
-                    st.session_state.live_loss_count = 0
+                    st.session_state.live_current_bet, st.session_state.live_loss_count = sb_init_bet, 0
                     last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
-                    if len(set(last_n)) == 1:
-                        st.session_state.live_pending_bet = actual if sb_strat == "Follow Streak" else ("Down" if actual == "Up" else "Up")
-                    else:
-                        st.session_state.live_pending_bet = None
+                    st.session_state.live_pending_bet = actual if (len(set(last_n)) == 1 and sb_strat == "Follow Streak") else None
                 else:
                     st.session_state.live_loss_count += 1
                     if sb_strat == "Follow Streak":
-                        st.session_state.live_pending_bet = None
-                        st.session_state.live_current_bet = sb_init_bet
+                        st.session_state.live_pending_bet, st.session_state.live_current_bet = None, sb_init_bet
                     else:
                         if st.session_state.live_loss_count >= sb_max_l:
-                            st.session_state.live_current_bet = sb_init_bet
-                            st.session_state.live_pending_bet = None
+                            st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
                         else:
                             st.session_state.live_current_bet *= 2
-            
-            # Check for Trigger
             if not st.session_state.live_pending_bet:
                 last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
                 if len(set(last_n)) == 1:
-                    if sb_strat == "Follow Streak": st.session_state.live_pending_bet = last_n[-1]
-                    else: st.session_state.live_pending_bet = "Down" if last_n[-1] == "Up" else "Up"
-
+                    st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
             st.session_state.last_processed_time = latest['Time']
             st.session_state.live_history.append({"Time": latest['Time'], "Bankroll": st.session_state.live_bankroll, "Result": actual, "Bet On": st.session_state.live_pending_bet})
-
         c1, c2, c3 = st.columns(3)
         c1.metric("Live Bankroll", f"${st.session_state.live_bankroll:,.2f}")
-        c2.metric("Next Bet Size", f"${st.session_state.live_current_bet:,.2f}" if st.session_state.live_pending_bet else "$0.00")
+        c2.metric("Next Bet", f"${st.session_state.live_current_bet:,.2f}" if st.session_state.live_pending_bet else "$0.00")
         c3.metric("Action", f"Betting {st.session_state.live_pending_bet}" if st.session_state.live_pending_bet else "Waiting...")
-        
         if st.session_state.live_history:
             st.plotly_chart(px.line(pd.DataFrame(st.session_state.live_history), x="Time", y="Bankroll"))
-        
         time.sleep(30); st.rerun()
