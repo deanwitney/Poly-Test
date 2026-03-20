@@ -180,16 +180,12 @@ if mode == "Backtest & Optimize":
                 max_dd_allowed = sb_bankroll * (dd_limit_pct / 100) if dd_limit_pct > 0 else 999999
                 
                 streaks_to_test = range(1, 6)
-                
-                # --- NEW RISK PERCENTAGE LOGIC ---
-                # 0.5%, 1%, 2%, 3% of the Starting Bankroll
                 bets_to_test = [
                     sb_bankroll * 0.005,
                     sb_bankroll * 0.010,
                     sb_bankroll * 0.020,
                     sb_bankroll * 0.030
                 ]
-                
                 doubles_to_test = range(1, 10)
                 
                 total_runs = len(streaks_to_test) * len(bets_to_test) * len(doubles_to_test)
@@ -222,7 +218,6 @@ if mode == "Backtest & Optimize":
                                 })
                                 
                                 display_df = pd.DataFrame(results).sort_values("Profit", ascending=False)
-                                # Formatted to .2f to handle decimal cents perfectly
                                 display_df["Base Bet"] = display_df["Base Bet"].apply(lambda x: f"${x:,.2f}")
                                 display_df["Profit"] = display_df["Profit"].apply(lambda x: f"${x:,.2f}")
                                 display_df["Max DD"] = display_df["Max DD"].apply(lambda x: f"${x:,.2f}")
@@ -292,6 +287,37 @@ if mode == "Backtest & Optimize":
             
             with st.expander("📄 View Raw Data Log (Find the Bust)"): 
                 st.dataframe(res_df.iloc[::-1], width='stretch')
+                
+            # --- NEW STREAK ANALYSIS EXPANDER ---
+            with st.expander("📊 View Streak Distribution Analysis"):
+                s = st.session_state.stored_df['Outcome']
+                # Create groups of consecutive identical values
+                streak_groups = (s != s.shift()).cumsum()
+                # Count the length of each group
+                streak_lengths = s.groupby(streak_groups).size()
+                # Count the occurrences of each streak length
+                streak_counts = streak_lengths.value_counts().sort_index()
+                
+                # Filter for only meaningful streaks (3 or more) to keep the chart clean
+                streak_counts = streak_counts[streak_counts.index >= 3]
+                
+                dist_df = pd.DataFrame({
+                    'Streak Length': streak_counts.index.astype(str) + " in a row",
+                    'Occurrences': streak_counts.values
+                })
+                
+                fig_bar = px.bar(
+                    dist_df, x='Streak Length', y='Occurrences', 
+                    title="Market Streak Frequency (In Your Loaded Dataset)",
+                    text='Occurrences', color='Occurrences', 
+                    color_continuous_scale='Reds'
+                )
+                fig_bar.update_layout(template="plotly_dark", showlegend=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+                # Dynamic Survival Math text
+                bust_streak = st.session_state.sb_streak + st.session_state.sb_max_l
+                st.info(f"💡 **Survival Math:** Your current trigger is **{st.session_state.sb_streak}**, and you allow **{st.session_state.sb_max_l}** Max Doubles. You will mathematically bust if the market prints **{bust_streak} in a row**. Check the chart above to see exactly how many times you would have hit that wall!")
 
 # --- LIVE MODE (Simulator) ---
 else:
