@@ -11,10 +11,10 @@ from datetime import datetime
 st.set_page_config(page_title="BTC Master Strategy Lab", layout="wide")
 ET_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 
-# --- 2. SECURITY LAYER (Corrected for Password: 1199) ---
+# --- 2. SECURITY LAYER (Corrected for Password: ) ---
 def check_password():
     """Returns True if the user had the correct password."""
-    # THE FIX: This is the actual SHA-256 hash for "1199"
+    # THE FIX: This is the actual SHA-256 hash for ""
     CORRECT_HASH = "7123d367e354baefc7131376b2e3bbab1055dd45ba920b9f1ee2047cb1b72efc"
 
     if "password_correct" not in st.session_state:
