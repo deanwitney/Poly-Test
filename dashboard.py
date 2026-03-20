@@ -11,7 +11,7 @@ from datetime import datetime
 st.set_page_config(page_title="BTC Master Strategy Lab", layout="wide")
 ET_TIMEZONE = zoneinfo.ZoneInfo("America/New_York")
 
-# --- 2. SECURITY LAYER ---
+# --- 2. SECURITY LAYER (Password: 1199) ---
 def check_password():
     CORRECT_HASH = "7123d367e354baefc7131376b2e3bbab1055dd45ba920b9f1ee2047cb1b72efc"
     if "password_correct" not in st.session_state:
@@ -45,23 +45,44 @@ for key, val in {
 
 # --- 4. ENGINE FUNCTIONS ---
 def fetch_binance_history(limit=2000):
-    url = "https://api.binance.com/api/v3/klines"
+    # MIRROR FAILOVER: If one is blocked, try the next
+    base_urls = [
+        "https://api.binance.com",
+        "https://api1.binance.com",
+        "https://api2.binance.com",
+        "https://api3.binance.com"
+    ]
     all_data, remaining, end_time = [], limit, None
-    with st.spinner(f"📡 Downloading {limit} intervals from Binance..."):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    with st.spinner(f"📡 Searching mirrors for {limit} data points..."):
         while remaining > 0:
             f_limit = min(remaining, 1000)
             params = {"symbol": "BTCUSDT", "interval": "5m", "limit": f_limit}
             if end_time: params["endTime"] = end_time
-            try:
-                res = requests.get(url, params=params).json()
-                if not res or not isinstance(res, list) or len(res) == 0: break
-                all_data = res + all_data
-                end_time = res[0][0] - 1
-                remaining -= len(res)
-            except: break
+            
+            success = False
+            for base in base_urls:
+                try:
+                    res = requests.get(f"{base}/api/v3/klines", params=params, headers=headers, timeout=10)
+                    if res.status_code == 200:
+                        data = res.json()
+                        if data and isinstance(data, list) and len(data) > 0:
+                            all_data = data + all_data
+                            end_time = data[0][0] - 1
+                            remaining -= len(data)
+                            success = True
+                            break # We got the data, exit the mirror loop
+                    elif res.status_code == 429: # Rate limited
+                        time.sleep(1)
+                except:
+                    continue 
+            
+            if not success:
+                break # All mirrors failed or data ended
     
     if not all_data:
-        return pd.DataFrame() # Return empty if fails
+        return pd.DataFrame()
 
     df = pd.DataFrame(all_data, columns=['ot','o','h','l','c','v','ct','qv','nt','tbb','tbq','i'])
     df['Outcome'] = df.apply(lambda x: "Up" if float(x['c']) >= float(x['o']) else "Down", axis=1)
@@ -69,10 +90,8 @@ def fetch_binance_history(limit=2000):
     return df[['Time', 'Outcome', 'o', 'c']]
 
 def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
-    # THE FIX: If dataset is empty, exit immediately to avoid IndexError
     if dataset is None or dataset.empty:
         return None, 0, 0, 0, 0, 0, 0, None, None
-        
     bankroll, current_bet, history = s_bankroll, i_bet, []
     pending, w, l, ml, active_l = None, 0, 0, 0, 0
     peak_bankroll, max_drawdown = s_bankroll, 0
@@ -90,15 +109,13 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
             if pending == actual:
                 bankroll += (current_bet * 2); w += 1; active_l = 0; current_bet = i_bet
                 last_n = outcomes_list[-int(s_trigger):]
-                if len(set(last_n)) == 1: 
-                    pending = actual if strat == "Follow Streak" else ("Down" if actual == "Up" else "Up")
-                else: pending = None
+                pending = actual if (len(set(last_n)) == 1 and strat == "Follow Streak") else None
             else:
                 l += 1; active_l += 1; ml = max(ml, active_l)
                 if strat == "Follow Streak":
-                    pending = None; current_bet = i_bet; active_l = 0
+                    pending, current_bet, active_l = None, i_bet, 0
                 else:
-                    if active_l >= m_loss: current_bet = i_bet; active_l = 0; pending = None
+                    if active_l >= m_loss: pending, current_bet, active_l = None, i_bet, 0
                     else: current_bet *= 2
         if bankroll > peak_bankroll: peak_bankroll, peak_time = bankroll, row['Time']
         if (peak_bankroll - bankroll) > max_drawdown:
@@ -107,12 +124,11 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
         if pending is None:
             last_n = outcomes_list[-int(s_trigger):]
             if len(last_n) == s_trigger and len(set(last_n)) == 1:
-                if strat == "Follow Streak": pending = last_n[-1]
-                else: pending = "Down" if last_n[-1] == "Up" else "Up"
+                pending = last_n[-1] if strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
         history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": action, "Bet On": bet_dir})
     return pd.DataFrame(history), w, l, ml, bankroll, bankroll, max_drawdown, mdd_start, mdd_end
 
-# --- 5. UI ---
+# --- 5. UI SIDEBAR ---
 st.sidebar.title("🎮 Control Panel")
 mode = st.sidebar.radio("Mode", ["Backtest & Optimize", "Live Mode"])
 st.sidebar.markdown("---")
@@ -133,12 +149,11 @@ if mode == "Backtest & Optimize":
     st.title("📊 Backtest & Optimization")
     c1, c2 = st.columns(2)
     with c1:
-        num_f = st.number_input("Fetch Count", 500, 20000, 2000)
+        num_f = st.number_input("Fetch Count", 100, 20000, 500)
         if st.button("📡 Fetch Data", use_container_width=True):
             st.session_state.stored_df = fetch_binance_history(num_f)
             if st.session_state.stored_df.empty:
-                st.error("❌ Binance returned no data. Try a smaller Fetch Count or check your connection.")
-
+                st.error("❌ Still no data. Binance is currently blocking the cloud IP. Try again in 5 minutes or use a smaller Fetch Count.")
     with c2:
         if st.button("🚀 Optimize Strategy", use_container_width=True):
             if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
@@ -152,37 +167,31 @@ if mode == "Backtest & Optimize":
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
                 else: st.session_state.best_params_found = "None"
-            else: st.warning("⚠️ Fetch data first before optimizing!")
-
+    
     if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
         res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat)
         if res_df is not None:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Final Bankroll", f"${final:,.2f}")
-            col2.metric("Net Profit", f"${final-sb_bankroll:,.2f}")
-            col3.metric("Win/Loss", f"{w} / {l}")
-            col4.metric("Max Drawdown", f"${mdd:,.2f}")
-            fig = px.area(res_df, x="Time", y="Bankroll", title="Historical Bankroll Performance")
-            if mdd > 0: fig.add_vrect(x0=mdd_start, x1=mdd_end, fillcolor="red", opacity=0.2, annotation_text="Max Drawdown Area")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Final Bankroll", f"${final:,.2f}")
+            m2.metric("Net Profit", f"${final-sb_bankroll:,.2f}")
+            m3.metric("Win/Loss", f"{w} / {l}")
+            m4.metric("Max Drawdown", f"${mdd:,.2f}")
+            fig = px.area(res_df, x="Time", y="Bankroll")
+            if mdd > 0: fig.add_vrect(x0=mdd_start, x1=mdd_end, fillcolor="red", opacity=0.2)
             fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, width='stretch')
-        else: st.error("💥 ACCOUNT BUSTED")
-    else:
-        st.info("💡 Click **'Fetch Data'** to download Bitcoin history and begin analysis.")
+    else: st.info("💡 Fetch Bitcoin history to begin.")
 
-# --- LIVE MODE (Kept original logic) ---
 else:
     st.title("⚡ Live Strategy Bot")
     if not st.session_state.live_active:
         if st.button("🚀 ACTIVATE LIVE BOT"):
-            st.session_state.live_active = True
-            st.session_state.live_bankroll, st.session_state.live_current_bet = sb_bankroll, sb_init_bet
-            st.session_state.live_pending_bet, st.session_state.live_loss_count = None, 0
-            st.rerun()
+            st.session_state.live_active, st.session_state.live_bankroll = True, sb_bankroll
+            st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
+            st.session_state.live_loss_count = 0; st.rerun()
     else:
         if st.button("🛑 DEACTIVATE"):
-            st.session_state.live_active = False
-            st.rerun()
+            st.session_state.live_active = False; st.rerun()
     if st.session_state.live_active:
         st.info("Bot logic running... Refreshing every 30s")
         live_data = fetch_binance_history(20)
@@ -199,22 +208,18 @@ else:
                         st.session_state.live_pending_bet = actual if (len(set(last_n)) == 1 and sb_strat == "Follow Streak") else None
                     else:
                         st.session_state.live_loss_count += 1
-                        if sb_strat == "Follow Streak":
-                            st.session_state.live_pending_bet, st.session_state.live_current_bet = None, sb_init_bet
+                        if sb_strat == "Follow Streak": st.session_state.live_pending_bet, st.session_state.live_current_bet = None, sb_init_bet
                         else:
-                            if st.session_state.live_loss_count >= sb_max_l:
-                                st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
+                            if st.session_state.live_loss_count >= sb_max_l: st.session_state.live_current_bet, st.session_state.live_pending_bet = sb_init_bet, None
                             else: st.session_state.live_current_bet *= 2
                 if not st.session_state.live_pending_bet:
                     last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
-                    if len(set(last_n)) == 1:
-                        st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
+                    if len(set(last_n)) == 1: st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
                 st.session_state.last_processed_time = latest['Time']
                 st.session_state.live_history.append({"Time": latest['Time'], "Bankroll": st.session_state.live_bankroll, "Result": actual, "Bet On": st.session_state.live_pending_bet})
         c1, c2, c3 = st.columns(3)
         c1.metric("Live Bankroll", f"${st.session_state.live_bankroll:,.2f}")
         c2.metric("Next Bet", f"${st.session_state.live_current_bet:,.2f}" if st.session_state.live_pending_bet else "$0.00")
         c3.metric("Action", f"Betting {st.session_state.live_pending_bet}" if st.session_state.live_pending_bet else "Waiting...")
-        if st.session_state.live_history:
-            st.plotly_chart(px.line(pd.DataFrame(st.session_state.live_history), x="Time", y="Bankroll"))
+        if st.session_state.live_history: st.plotly_chart(px.line(pd.DataFrame(st.session_state.live_history), x="Time", y="Bankroll"))
         time.sleep(30); st.rerun()
