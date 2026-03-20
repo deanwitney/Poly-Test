@@ -56,7 +56,7 @@ def load_historical_data(limit=2000):
         except Exception as e:
             st.error(f"⚠️ Error reading CSV: {e}"); return pd.DataFrame()
 
-# --- 5. SIMULATION ENGINE (Now with Advance Betting) ---
+# --- 5. SIMULATION ENGINE (Now Returns Busted Charts) ---
 def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_price, fee_pct, sizing_strat, advance_x):
     if dataset is None or dataset.empty: return None, 0, 0, 0, 0, 0, 0, None, None
 
@@ -81,15 +81,12 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
                 resolve_in -= 1
                 action, bet_dir = f"In Flight (Wait {resolve_in})", pending
             else:
-                # RESOLVE THE BET
                 action, bet_dir = "Resolving", pending
                 if pending == actual:
-                    # WIN
                     bankroll += (current_bet * actual_mult)
                     w += 1; active_l = 0; current_bet = float(i_bet); accumulated_loss = 0.0
                     pending = None
                 else:
-                    # LOSS
                     l += 1; active_l += 1; ml = max(ml, active_l)
                     accumulated_loss += current_bet
                     pending = None
@@ -105,20 +102,21 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
                                 else: current_bet = (accumulated_loss + i_bet) / (actual_mult - 1)
                             else: current_bet *= 2
 
-        # 2. Look for new triggers if we aren't currently waiting for a bet to resolve
+        # 2. Look for new triggers
         if pending is None:
             last_n = outcomes_list[-int(s_trigger):]
             if len(last_n) == s_trigger and len(set(last_n)) == 1:
-                # PLACE NEW BET
                 pending = last_n[-1] if strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
                 resolve_in = advance_x + 1
                 
-                # Deduct funds when bet is placed
-                if bankroll < current_bet: return None, 0, 0, 0, 0, 0, 0, None, None
+                # BUST CHECK: If we don't have enough money for the next bet, log it and stop simulating
+                if bankroll < current_bet: 
+                    history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": "💥 BUSTED", "Bet On": pending})
+                    return pd.DataFrame(history), w, l, ml, bankroll, peak_bankroll, max_drawdown, mdd_start, mdd_end
+                
                 bankroll -= current_bet
                 action, bet_dir = "Bet Placed", pending
         
-        # Track Drawdowns
         if bankroll > peak_bankroll: peak_bankroll, peak_time = bankroll, row['Time']
         if (peak_bankroll - bankroll) > max_drawdown:
             max_drawdown = peak_bankroll - bankroll
@@ -126,7 +124,7 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
 
         history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": action, "Bet On": bet_dir})
         
-    return pd.DataFrame(history), w, l, ml, bankroll, bankroll, max_drawdown, mdd_start, mdd_end
+    return pd.DataFrame(history), w, l, ml, bankroll, peak_bankroll, max_drawdown, mdd_start, mdd_end
 
 # --- 6. UI SIDEBAR ---
 st.sidebar.title("🎮 Control Panel")
@@ -140,9 +138,7 @@ st.sidebar.markdown("### 💱 Market & Sizing")
 sb_share_price = st.sidebar.number_input("Avg Share Price (¢)", value=st.session_state.sb_share_price, min_value=1, max_value=99)
 sb_fee_pct = st.sidebar.number_input("Platform Fee (%)", value=st.session_state.sb_fee_pct, step=0.1, format="%.2f")
 sb_bet_sizing = st.sidebar.selectbox("Bet Sizing Logic", ["Dynamic Recovery", "Standard (x2)"], index=0 if st.session_state.sb_bet_sizing == "Dynamic Recovery" else 1)
-
-# NEW: Advance Betting
-sb_advance_x = st.sidebar.number_input("Advance Bet (Periods)", value=st.session_state.sb_advance_x, min_value=0, help="0 = bet resolves on the immediate next candle. 1 = skip one candle to secure odds, bet resolves on the 2nd candle.")
+sb_advance_x = st.sidebar.number_input("Advance Bet (Periods)", value=st.session_state.sb_advance_x, min_value=0)
 
 st.sidebar.markdown("### ⚙️ Constraints")
 sb_streak = st.sidebar.number_input("Streak Trigger", value=st.session_state.sb_streak, min_value=1)
@@ -162,7 +158,7 @@ if mode == "Backtest & Optimize":
     st.title("📊 CSV Backtest & Optimization")
     
     actual_mult = (100 / sb_share_price) * (1 - (sb_fee_pct / 100))
-    st.info(f"⏱️ **Advance Set to {sb_advance_x}:** When a streak triggers, the bot will wait {sb_advance_x * 5} minutes before resolving the bet, giving you time to buy shares at 50/50 odds.")
+    st.info(f"⏱️ **Advance Set to {sb_advance_x}:** When a streak triggers, the bot will wait {sb_advance_x * 5} minutes before resolving the bet.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -178,6 +174,7 @@ if mode == "Backtest & Optimize":
                     for b in [10, 25, 50, 100]:
                         for l in range(1, 10):
                             _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x)
+                            # The optimizer filters out busted runs automatically because m_bank will be too low
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
@@ -194,19 +191,26 @@ if mode == "Backtest & Optimize":
 
     if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
         res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x)
-        if res_df is not None:
+        if res_df is not None and not res_df.empty:
+            
+            # Check if the last action was our new BUST tag
+            is_busted = "💥 BUSTED" in res_df.iloc[-1]['Action']
+            if is_busted:
+                st.error("💥 ACCOUNT BUSTED - The strategy ran out of funds. See the chart below for the exact moment of failure.")
+            
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Final Bankroll", f"${final:,.2f}")
             col2.metric("Net Profit", f"${final-sb_bankroll:,.2f}")
             col3.metric("Win/Loss", f"{w} / {l}")
             col4.metric("Max Drawdown", f"${mdd:,.2f}")
-            fig = px.area(res_df, x="Time", y="Bankroll", title=f"Historical Performance")
+            
+            fig = px.area(res_df, x="Time", y="Bankroll", title="Historical Performance")
             if mdd > 0: fig.add_vrect(x0=mdd_start, x1=mdd_end, fillcolor="red", opacity=0.2, annotation_text="Max Drawdown Area")
             fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, width='stretch')
-            with st.expander("📄 View Raw Data Log"): st.dataframe(res_df.iloc[::-1], width='stretch')
-        else: st.error("💥 ACCOUNT BUSTED")
-    else: st.info("💡 Click **'Load CSV Data'** to begin analysis.")
+            
+            with st.expander("📄 View Raw Data Log (Find the Bust)"): 
+                st.dataframe(res_df.iloc[::-1], width='stretch')
 
 # --- LIVE MODE (Simulator) ---
 else:
@@ -241,7 +245,6 @@ else:
                 actual = latest['Outcome']
                 action = "Waiting"
                 
-                # 1. Process existing bet
                 if st.session_state.live_pending_bet:
                     if st.session_state.live_resolve_in > 1:
                         st.session_state.live_resolve_in -= 1
@@ -271,14 +274,18 @@ else:
                                         else: st.session_state.live_current_bet = (st.session_state.live_accum_loss + sb_init_bet) / (actual_mult - 1)
                                     else: st.session_state.live_current_bet *= 2
                 
-                # 2. Look for new triggers
                 if not st.session_state.live_pending_bet:
                     last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
                     if len(set(last_n)) == 1:
                         st.session_state.live_pending_bet = last_n[-1] if sb_strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
                         st.session_state.live_resolve_in = sb_advance_x + 1
-                        st.session_state.live_bankroll -= st.session_state.live_current_bet
-                        action = "Bet Placed"
+                        
+                        if st.session_state.live_bankroll < st.session_state.live_current_bet:
+                            action = "💥 BUSTED"
+                            st.session_state.live_active = False # Stop the live simulation
+                        else:
+                            st.session_state.live_bankroll -= st.session_state.live_current_bet
+                            action = "Bet Placed"
 
                 st.session_state.last_processed_time = latest['Time']
                 st.session_state.live_history.append({"Time": latest['Time'], "Bankroll": st.session_state.live_bankroll, "Result": actual, "Action": action, "Bet On": st.session_state.live_pending_bet})
@@ -292,4 +299,5 @@ else:
                 st.plotly_chart(px.line(pd.DataFrame(st.session_state.live_history), x="Time", y="Bankroll", title="Live Session Performance"))
                 with st.expander("📄 View Live Session Logs"): st.dataframe(pd.DataFrame(st.session_state.live_history).iloc[::-1], width='stretch')
             
-            st.session_state.sim_index += 1; time.sleep(5); st.rerun()
+            if st.session_state.live_active:
+                st.session_state.sim_index += 1; time.sleep(5); st.rerun()
