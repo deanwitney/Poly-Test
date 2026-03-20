@@ -35,7 +35,7 @@ if not check_password():
 # --- 3. INITIALIZE SESSION STATE ---
 for key, val in {
     'sb_init_bet': 10, 'sb_streak': 2, 'sb_max_l': 6, 
-    'sb_strat': "Follow Streak", 'sb_dd_limit': 100,
+    'sb_strat': "Follow Streak", 'sb_dd_limit': 100, 'sb_share_price': 50, # NEW DEFAULT
     'best_params_found': None, 'stored_df': None,
     'live_active': False, 'live_bankroll': 1000.0, 'live_history': [],
     'last_processed_time': None, 'live_pending_bet': None,
@@ -43,37 +43,26 @@ for key, val in {
 }.items():
     if key not in st.session_state: st.session_state[key] = val
 
-# --- 4. CSV DATA LOADER (Replaces API Fetch) ---
+# --- 4. CSV DATA LOADER ---
 def load_historical_data(limit=2000):
     filename = "btc_historical_data.csv"
-    
     if not os.path.exists(filename):
         st.error(f"❌ File '{filename}' not found. Please ensure it is in the same folder as this script on GitHub.")
         return pd.DataFrame()
-
     with st.spinner(f"📂 Loading up to {limit} data points from CSV..."):
         try:
-            # Read the CSV
             df = pd.read_csv(filename)
-            
-            # Ensure price columns are numeric
             df['o'] = pd.to_numeric(df['o'])
             df['c'] = pd.to_numeric(df['c'])
-            
-            # Calculate Outcome
             df['Outcome'] = df.apply(lambda x: "Up" if x['c'] >= x['o'] else "Down", axis=1)
-            
-            # Convert timestamp to human-readable NY Time
             df['Time'] = pd.to_datetime(df['ot'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(ET_TIMEZONE)
-            
-            # Return only the requested number of recent rows
             return df.tail(limit).reset_index(drop=True)
         except Exception as e:
             st.error(f"⚠️ Error reading CSV: {e}")
             return pd.DataFrame()
 
-# --- 5. SIMULATION ENGINE ---
-def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
+# --- 5. SIMULATION ENGINE (Now with Polymarket Pricing) ---
+def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_price):
     if dataset is None or dataset.empty:
         return None, 0, 0, 0, 0, 0, 0, None, None
 
@@ -94,7 +83,11 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
             if bankroll < current_bet: return None, 0, 0, 0, 0, 0, 0, None, None
             bankroll -= current_bet
             if pending == actual:
-                bankroll += (current_bet * 2); w += 1; active_l = 0; current_bet = i_bet
+                # NEW PAYOUT LOGIC: $1 per share bought
+                payout = current_bet * (100 / share_price) 
+                bankroll += payout
+                w += 1; active_l = 0; current_bet = i_bet
+                
                 last_n = outcomes_list[-int(s_trigger):]
                 if len(set(last_n)) == 1: 
                     pending = actual if strat == "Follow Streak" else ("Down" if actual == "Up" else "Up")
@@ -121,19 +114,23 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat):
         history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": action, "Bet On": bet_dir})
     return pd.DataFrame(history), w, l, ml, bankroll, bankroll, max_drawdown, mdd_start, mdd_end
 
-# --- SIDEBAR ---
+# --- 6. UI SIDEBAR ---
 st.sidebar.title("🎮 Control Panel")
 mode = st.sidebar.radio("Mode", ["Backtest & Optimize", "Live Mode (Simulator)"])
 st.sidebar.markdown("---")
 
 sb_bankroll = st.sidebar.number_input("Starting Bankroll ($)", value=1000)
 sb_init_bet = st.sidebar.number_input("Initial Bet ($)", value=st.session_state.sb_init_bet)
+
+# NEW: SHARE PRICE INPUT
+sb_share_price = st.sidebar.number_input("Avg Share Price (¢)", value=st.session_state.sb_share_price, min_value=1, max_value=99, help="How much you pay for a YES/NO share on Polymarket.")
+
 sb_streak = st.sidebar.number_input("Streak Trigger", value=st.session_state.sb_streak, min_value=1)
 sb_max_l = st.sidebar.number_input("Max Doubles", value=st.session_state.sb_max_l, min_value=1)
 sb_strat = st.sidebar.selectbox("Strategy Type", ["Follow Streak", "Anti-Streak (Bet Opp)"], 
                                index=0 if st.session_state.sb_strat == "Follow Streak" else 1)
 
-st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l, st.session_state.sb_strat = sb_init_bet, sb_streak, sb_max_l, sb_strat
+st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l, st.session_state.sb_strat, st.session_state.sb_share_price = sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price
 
 st.sidebar.markdown("---")
 st.sidebar.header("🛡️ Constraints")
@@ -141,9 +138,16 @@ safety_floor_pct = st.sidebar.slider("Safety Floor (%)", 0, 100, 20)
 dd_limit_pct = st.sidebar.number_input("Max DD Limit (%)", value=st.session_state.sb_dd_limit)
 st.session_state.sb_dd_limit = dd_limit_pct
 
-# --- BACKTEST MODE ---
+# --- 7. APP MODES ---
 if mode == "Backtest & Optimize":
     st.title("📊 CSV Backtest & Optimization")
+    
+    # Calculate and display the actual multiplier
+    multiplier = 100 / sb_share_price
+    st.info(f"💡 At **{sb_share_price}¢** per share, your payout multiplier is **{multiplier:.2f}x**. A $10 bet pays out **${10*multiplier:.2f}** total.")
+    if sb_share_price > 50:
+        st.warning(f"⚠️ **Math Warning:** Because shares cost more than 50¢, standard doubling after a loss will result in smaller recoveries. If you buy at 67¢ or higher, doubling will actually lose money on a win.")
+
     c1, c2 = st.columns(2)
     with c1:
         num_f = st.number_input("Data Points to Load", 500, 100000, 2000)
@@ -157,7 +161,8 @@ if mode == "Backtest & Optimize":
                 for s in range(1, 7):
                     for b in [10, 25, 50, 100]:
                         for l in range(1, 10):
-                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat)
+                            # Passed sb_share_price to optimizer
+                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat, sb_share_price)
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
                                 results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
                 if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
@@ -175,7 +180,8 @@ if mode == "Backtest & Optimize":
                 st.rerun()
 
     if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
-        res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat)
+        # Passed sb_share_price to main graph
+        res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price)
         if res_df is not None:
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Final Bankroll", f"${final:,.2f}")
@@ -197,7 +203,6 @@ else:
     st.title("⚡ Live Strategy Simulator")
     st.caption("Since the API is disabled, this mode simulates live trading by stepping through your CSV data every 5 seconds.")
     
-    # Needs a session state counter to track our place in the CSV
     if 'sim_index' not in st.session_state: st.session_state.sim_index = 0
     
     if not st.session_state.live_active:
@@ -207,8 +212,6 @@ else:
             st.session_state.live_current_bet = sb_init_bet
             st.session_state.live_pending_bet = None
             st.session_state.live_loss_count = 0
-            
-            # Start simulation from 100 periods into the dataset to allow streak checking
             st.session_state.sim_index = 100 
             st.rerun()
     else:
@@ -218,8 +221,6 @@ else:
 
     if st.session_state.live_active:
         st.info("Simulation running... Advancing one candle every 5 seconds.")
-        
-        # Load full data to slice from
         full_data = load_historical_data(100000)
         
         if full_data.empty:
@@ -228,42 +229,38 @@ else:
             st.warning("End of CSV data reached.")
             st.session_state.live_active = False
         else:
-            # Get the "historical" 20 periods leading up to our current simulation index
             live_data = full_data.iloc[st.session_state.sim_index-20 : st.session_state.sim_index]
             latest = live_data.iloc[-1]
             
             if st.session_state.last_processed_time != latest['Time']:
                 actual = latest['Outcome']
                 
-                # 1. Resolve Pending Bet
                 if st.session_state.live_pending_bet:
                     st.session_state.live_bankroll -= st.session_state.live_current_bet
                     if st.session_state.live_pending_bet == actual:
-                        # WIN
-                        st.session_state.live_bankroll += (st.session_state.live_current_bet * 2)
+                        # NEW LIVE PAYOUT LOGIC
+                        payout = st.session_state.live_current_bet * (100 / sb_share_price)
+                        st.session_state.live_bankroll += payout
                         st.session_state.live_current_bet = sb_init_bet
                         st.session_state.live_loss_count = 0
                         
-                        # Trend-Aware Win Continuity check
                         last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
                         if len(set(last_n)) == 1:
                             st.session_state.live_pending_bet = actual if sb_strat == "Follow Streak" else ("Down" if actual == "Up" else "Up")
                         else:
                             st.session_state.live_pending_bet = None
                     else:
-                        # LOSS
                         st.session_state.live_loss_count += 1
                         if sb_strat == "Follow Streak":
                             st.session_state.live_pending_bet = None
                             st.session_state.live_current_bet = sb_init_bet
-                        else: # Anti-Streak
+                        else: 
                             if st.session_state.live_loss_count >= sb_max_l:
                                 st.session_state.live_current_bet = sb_init_bet
                                 st.session_state.live_pending_bet = None
                             else:
                                 st.session_state.live_current_bet *= 2
                 
-                # 2. Check for New Trigger
                 if not st.session_state.live_pending_bet:
                     last_n = live_data['Outcome'].tail(int(sb_streak)).tolist()
                     if len(set(last_n)) == 1:
@@ -286,7 +283,6 @@ else:
                 with st.expander("📄 View Live Session Logs"):
                     st.dataframe(pd.DataFrame(st.session_state.live_history).iloc[::-1], width='stretch')
             
-            # Advance the simulation index and wait before refreshing
             st.session_state.sim_index += 1
             time.sleep(5) 
             st.rerun()
