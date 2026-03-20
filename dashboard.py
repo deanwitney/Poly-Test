@@ -56,7 +56,7 @@ def load_historical_data(limit=2000):
         except Exception as e:
             st.error(f"⚠️ Error reading CSV: {e}"); return pd.DataFrame()
 
-# --- 5. SIMULATION ENGINE (Now Returns Busted Charts) ---
+# --- 5. SIMULATION ENGINE ---
 def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_price, fee_pct, sizing_strat, advance_x):
     if dataset is None or dataset.empty: return None, 0, 0, 0, 0, 0, 0, None, None
 
@@ -75,7 +75,6 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
         outcomes_list.append(actual)
         action, bet_dir = "Waiting", "None"
         
-        # 1. Process an existing bet
         if pending:
             if resolve_in > 1:
                 resolve_in -= 1
@@ -102,14 +101,12 @@ def run_simulation(dataset, s_bankroll, i_bet, s_trigger, m_loss, strat, share_p
                                 else: current_bet = (accumulated_loss + i_bet) / (actual_mult - 1)
                             else: current_bet *= 2
 
-        # 2. Look for new triggers
         if pending is None:
             last_n = outcomes_list[-int(s_trigger):]
             if len(last_n) == s_trigger and len(set(last_n)) == 1:
                 pending = last_n[-1] if strat == "Follow Streak" else ("Down" if last_n[-1] == "Up" else "Up")
                 resolve_in = advance_x + 1
                 
-                # BUST CHECK: If we don't have enough money for the next bet, log it and stop simulating
                 if bankroll < current_bet: 
                     history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": "💥 BUSTED", "Bet On": pending})
                     return pd.DataFrame(history), w, l, ml, bankroll, peak_bankroll, max_drawdown, mdd_start, mdd_end
@@ -165,26 +162,107 @@ if mode == "Backtest & Optimize":
         num_f = st.number_input("Data Points to Load", 500, 100000, 2000)
         if st.button("📂 Load CSV Data", use_container_width=True):
             st.session_state.stored_df = load_historical_data(num_f)
+    
     with c2:
         if st.button("🚀 Optimize Strategy", use_container_width=True):
             if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
+                
+                # --- START OF LIVE OPTIMIZER UI ---
+                st.markdown("### ⚙️ Optimizer Running...")
+                progress_bar = st.progress(0)
+                
+                ui_container = st.container()
+                with ui_container:
+                    # Left side for Leaderboard Table, Right side for Live Monitor
+                    col_table, col_live = st.columns([2, 1])
+                    table_placeholder = col_table.empty()
+                    live_placeholder = col_live.empty()
+                
                 results = []
                 max_dd_allowed = sb_bankroll * (dd_limit_pct / 100) if dd_limit_pct > 0 else 999999
-                for s in range(1, 7):
-                    for b in [10, 25, 50, 100]:
-                        for l in range(1, 10):
-                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(st.session_state.stored_df, sb_bankroll, b, s, l, sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x)
-                            # The optimizer filters out busted runs automatically because m_bank will be too low
+                
+                # Define search space
+                streaks_to_test = range(1, 6)
+                bets_to_test = [10, 25, 50, 100]
+                doubles_to_test = range(1, 10)
+                
+                total_runs = len(streaks_to_test) * len(bets_to_test) * len(doubles_to_test)
+                current_run = 0
+
+                for s in streaks_to_test:
+                    for b in bets_to_test:
+                        for l in doubles_to_test:
+                            current_run += 1
+                            
+                            # 1. Update Monitor BEFORE simulation
+                            with live_placeholder.container():
+                                st.info(f"**Test {current_run}/{total_runs}**")
+                                st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                st.write("⏳ *Running simulation...*")
+
+                            # 2. Run simulation
+                            _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(
+                                st.session_state.stored_df, sb_bankroll, b, s, l, 
+                                sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x
+                            )
+                            
+                            profit = final - sb_bankroll if final is else -sb_bankroll
+                            
+                            # 3. Update Table and Monitor AFTER simulation
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
-                                results.append({"S": s, "B": b, "L": l, "P": final-sb_bankroll, "DD": mdd})
-                if results: st.session_state.best_params_found = pd.DataFrame(results).sort_values("P", ascending=False).iloc[0]
-                else: st.session_state.best_params_found = "None"
+                                results.append({
+                                    "Streak": s, "Base Bet": f"${b}", "Max Doubles": l, 
+                                    "Profit": profit, "Max DD": mdd
+                                })
+                                
+                                # Update Live Table
+                                display_df = pd.DataFrame(results).sort_values("Profit", ascending=False)
+                                # Format currencies for clean viewing
+                                display_df["Profit"] = display_df["Profit"].apply(lambda x: f"${x:,.2f}")
+                                display_df["Max DD"] = display_df["Max DD"].apply(lambda x: f"${x:,.2f}")
+                                
+                                table_placeholder.dataframe(display_df, use_container_width=True, hide_index=True)
+                                
+                                with live_placeholder.container():
+                                    st.info(f"**Test {current_run}/{total_runs}**")
+                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                    st.success(f"✅ Survived! Profit: ${profit:,.2f}")
+                            else:
+                                with live_placeholder.container():
+                                    st.info(f"**Test {current_run}/{total_runs}**")
+                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                    st.error("💥 Result: BUSTED (or hit Safety constraints)")
+                            
+                            # Update progress bar
+                            progress_bar.progress(current_run / total_runs)
+                            
+                            # Tiny sleep to allow UI to render smoothly
+                            time.sleep(0.01)
+                
+                # --- END OF LIVE OPTIMIZER UI ---
+
+                if results:
+                    # Parse strings back to numbers to find the true best row mathematically
+                    best_row_idx = pd.DataFrame(results)['Profit'].replace('[\$,]', '', regex=True).astype(float).idxmax()
+                    best_row = pd.DataFrame(results).iloc[best_row_idx]
+                    
+                    st.session_state.best_params_found = {
+                        "S": int(best_row["Streak"]), 
+                        "B": int(best_row["Base Bet"].replace('$', '')), 
+                        "L": int(best_row["Max Doubles"]), 
+                        "P": float(best_row["Profit"].replace('$', '').replace(',', '')), 
+                        "DD": float(best_row["Max DD"].replace('$', '').replace(',', ''))
+                    }
+                    st.success("🎉 Optimization Complete!")
+                else: 
+                    st.session_state.best_params_found = "None"
+                    st.error("No strategies survived the constraints.")
             else: st.warning("⚠️ Please load CSV data first!")
 
     if st.session_state.best_params_found is not None:
         if not isinstance(st.session_state.best_params_found, str):
             best = st.session_state.best_params_found
-            st.success(f"🏆 Best: Profit **${best['P']:,.2f}** | Max DD: **${best['DD']:,.2f}**")
+            st.success(f"🏆 Best Found: Profit **${best['P']:,.2f}** | Max DD: **${best['DD']:,.2f}**")
             if st.button("✅ USE THESE PARAMETERS", use_container_width=True):
                 st.session_state.sb_init_bet, st.session_state.sb_streak, st.session_state.sb_max_l = int(best['B']), int(best['S']), int(best['L'])
                 st.session_state.best_params_found = None; st.rerun()
@@ -193,7 +271,6 @@ if mode == "Backtest & Optimize":
         res_df, w, l, ms, final, m_bank, mdd, mdd_start, mdd_end = run_simulation(st.session_state.stored_df, sb_bankroll, sb_init_bet, sb_streak, sb_max_l, sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x)
         if res_df is not None and not res_df.empty:
             
-            # Check if the last action was our new BUST tag
             is_busted = "💥 BUSTED" in res_df.iloc[-1]['Action']
             if is_busted:
                 st.error("💥 ACCOUNT BUSTED - The strategy ran out of funds. See the chart below for the exact moment of failure.")
