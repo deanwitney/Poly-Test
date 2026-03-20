@@ -214,9 +214,10 @@ if mode == "Backtest & Optimize":
                 streaks_to_test = range(3, 6) 
                 doubles_to_test = range(1, 4)
                 
-                # Optimizer adapts based on whether we are scaling % or testing flat $
+                # --- UPDATED OPTIMIZER ARRAY HERE ---
                 if sb_scale_bet:
-                    bets_to_test = [0.5, 1.0, 2.0, 3.0] # Percentages
+                    # Now tests 0.25%, 0.5%, 1%, 1.5%, 2%
+                    bets_to_test = [0.25, 0.5, 1.0, 1.5, 2.0]
                     bet_label = "Base Bet (%)"
                 else:
                     bets_to_test = [10, 25, 50, 100] # Flat Dollars
