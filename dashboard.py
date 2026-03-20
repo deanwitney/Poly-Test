@@ -167,7 +167,6 @@ if mode == "Backtest & Optimize":
         if st.button("🚀 Optimize Strategy", use_container_width=True):
             if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
                 
-                # --- START OF LIVE OPTIMIZER UI ---
                 st.markdown("### ⚙️ Optimizer Running...")
                 progress_bar = st.progress(0)
                 
@@ -177,11 +176,20 @@ if mode == "Backtest & Optimize":
                     table_placeholder = col_table.empty()
                     live_placeholder = col_live.empty()
                 
-                results = [] # Store raw numbers here
+                results = [] 
                 max_dd_allowed = sb_bankroll * (dd_limit_pct / 100) if dd_limit_pct > 0 else 999999
                 
                 streaks_to_test = range(1, 6)
-                bets_to_test = [10, 25, 50, 100]
+                
+                # --- NEW RISK PERCENTAGE LOGIC ---
+                # 0.5%, 1%, 2%, 3% of the Starting Bankroll
+                bets_to_test = [
+                    sb_bankroll * 0.005,
+                    sb_bankroll * 0.010,
+                    sb_bankroll * 0.020,
+                    sb_bankroll * 0.030
+                ]
+                
                 doubles_to_test = range(1, 10)
                 
                 total_runs = len(streaks_to_test) * len(bets_to_test) * len(doubles_to_test)
@@ -194,7 +202,7 @@ if mode == "Backtest & Optimize":
                             
                             with live_placeholder.container():
                                 st.info(f"**Test {current_run}/{total_runs}**")
-                                st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                st.write(f"🔹 **Streak:** {s} | **Bet:** ${b:,.2f} | **Max Dbl:** {l}")
                                 st.write("⏳ *Running simulation...*")
 
                             _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(
@@ -208,15 +216,14 @@ if mode == "Backtest & Optimize":
                                 profit = -sb_bankroll
                             
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
-                                # Append RAW numbers (No dollar signs here)
                                 results.append({
                                     "Streak": s, "Base Bet": float(b), "Max Doubles": l, 
                                     "Profit": profit, "Max DD": mdd
                                 })
                                 
-                                # Format for display only
                                 display_df = pd.DataFrame(results).sort_values("Profit", ascending=False)
-                                display_df["Base Bet"] = display_df["Base Bet"].apply(lambda x: f"${x:,.0f}")
+                                # Formatted to .2f to handle decimal cents perfectly
+                                display_df["Base Bet"] = display_df["Base Bet"].apply(lambda x: f"${x:,.2f}")
                                 display_df["Profit"] = display_df["Profit"].apply(lambda x: f"${x:,.2f}")
                                 display_df["Max DD"] = display_df["Max DD"].apply(lambda x: f"${x:,.2f}")
                                 
@@ -224,21 +231,18 @@ if mode == "Backtest & Optimize":
                                 
                                 with live_placeholder.container():
                                     st.info(f"**Test {current_run}/{total_runs}**")
-                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b:,.2f} | **Max Dbl:** {l}")
                                     st.success(f"✅ Survived! Profit: ${profit:,.2f}")
                             else:
                                 with live_placeholder.container():
                                     st.info(f"**Test {current_run}/{total_runs}**")
-                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b} | **Max Dbl:** {l}")
+                                    st.write(f"🔹 **Streak:** {s} | **Bet:** ${b:,.2f} | **Max Dbl:** {l}")
                                     st.error("💥 Result: BUSTED (or hit constraints)")
                             
                             progress_bar.progress(current_run / total_runs)
                             time.sleep(0.01)
-                
-                # --- END OF LIVE OPTIMIZER UI ---
 
                 if results:
-                    # Find the best row using raw numbers
                     res_df_raw = pd.DataFrame(results)
                     best_row_idx = res_df_raw['Profit'].idxmax()
                     best_row = res_df_raw.iloc[best_row_idx]
@@ -260,7 +264,6 @@ if mode == "Backtest & Optimize":
         if not isinstance(st.session_state.best_params_found, str):
             best = st.session_state.best_params_found
             st.success(f"🏆 Best Found: Profit **${best['P']:,.2f}** | Max DD: **${best['DD']:,.2f}**")
-            # Apply parameters and immediately refresh
             if st.button("✅ USE THESE PARAMETERS", use_container_width=True):
                 st.session_state.sb_init_bet = best['B']
                 st.session_state.sb_streak = best['S']
