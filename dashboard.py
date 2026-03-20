@@ -16,12 +16,12 @@ def check_password():
     if "password_correct" not in st.session_state: st.session_state["password_correct"] = False
     if st.session_state["password_correct"]: return True
     
-    st.title("🛡️ BTC Strategy Lab Login")
+    st.title("BTC Strategy Lab Login")
     password_input = st.text_input("Enter Dashboard Password", type="password")
     if st.button("Unlock Dashboard"):
         if hashlib.sha256(password_input.strip().encode()).hexdigest() == CORRECT_HASH:
             st.session_state["password_correct"] = True; st.rerun()
-        else: st.error("😕 Password incorrect.")
+        else: st.error("[Error] Password incorrect.")
     return False
 
 if not check_password(): st.stop()
@@ -44,9 +44,9 @@ for key, val in {
 def load_historical_data(limit=2000):
     filename = "btc_historical_data.csv"
     if not os.path.exists(filename):
-        st.error(f"❌ '{filename}' not found. Please ensure it is in the same folder on GitHub.")
+        st.error(f"[Error] '{filename}' not found. Please ensure it is in the same folder on GitHub.")
         return pd.DataFrame()
-    with st.spinner(f"📂 Loading {limit} data points..."):
+    with st.spinner(f"Loading {limit} data points..."):
         try:
             df = pd.read_csv(filename)
             df['o'] = pd.to_numeric(df['o']); df['c'] = pd.to_numeric(df['c'])
@@ -54,7 +54,7 @@ def load_historical_data(limit=2000):
             df['Time'] = pd.to_datetime(df['ot'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(ET_TIMEZONE)
             return df.tail(limit).reset_index(drop=True)
         except Exception as e:
-            st.error(f"⚠️ Error reading CSV: {e}"); return pd.DataFrame()
+            st.error(f"[Error] reading CSV: {e}"); return pd.DataFrame()
 
 # --- 5. SIMULATION ENGINE ---
 def run_simulation(dataset, s_bankroll, i_bet, scale_bet, s_trigger, m_loss, strat, share_price, fee_pct, sizing_strat, advance_x):
@@ -125,7 +125,7 @@ def run_simulation(dataset, s_bankroll, i_bet, scale_bet, s_trigger, m_loss, str
                 resolve_in = advance_x + 1
                 
                 if bankroll < current_bet: 
-                    history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": "💥 BUSTED", "Bet On": pending})
+                    history.append({"Time": row['Time'], "BTC Result": actual, "Bankroll": round(bankroll, 2), "Action": "[BUSTED]", "Bet On": pending})
                     return pd.DataFrame(history), w, l, ml, bankroll, peak_bankroll, max_drawdown, mdd_start, mdd_end
                 
                 bankroll -= current_bet
@@ -141,11 +141,11 @@ def run_simulation(dataset, s_bankroll, i_bet, scale_bet, s_trigger, m_loss, str
     return pd.DataFrame(history), w, l, ml, bankroll, peak_bankroll, max_drawdown, mdd_start, mdd_end
 
 # --- 6. UI SIDEBAR ---
-st.sidebar.title("🎮 Control Panel")
+st.sidebar.title("Control Panel")
 mode = st.sidebar.radio("Mode", ["Backtest & Optimize", "Live Mode (Simulator)"])
 st.sidebar.markdown("---")
 
-st.sidebar.markdown("### 💰 Bankroll & Sizing")
+st.sidebar.markdown("### Bankroll & Sizing")
 sb_bankroll = st.sidebar.number_input("Starting Bankroll ($)", value=float(st.session_state.sb_bankroll))
 sb_scale_bet = st.sidebar.checkbox("Scale Base Bet as % of Bankroll", value=st.session_state.sb_scale_bet, help="If checked, your base bet will grow as your bankroll grows.")
 
@@ -157,12 +157,12 @@ if sb_scale_bet:
 else:
     sb_init_bet = st.sidebar.number_input("Base Bet ($)", value=float(st.session_state.sb_init_bet), step=1.0)
 
-sb_share_price = st.sidebar.number_input("Avg Share Price (¢)", value=int(st.session_state.sb_share_price), min_value=1, max_value=99)
+sb_share_price = st.sidebar.number_input("Avg Share Price (Cents)", value=int(st.session_state.sb_share_price), min_value=1, max_value=99)
 sb_fee_pct = st.sidebar.number_input("Platform Fee (%)", value=float(st.session_state.sb_fee_pct), step=0.1, format="%.2f")
 sb_bet_sizing = st.sidebar.selectbox("Bet Sizing Logic", ["Dynamic Recovery", "Standard (x2)"], index=0 if st.session_state.sb_bet_sizing == "Dynamic Recovery" else 1)
 sb_advance_x = st.sidebar.number_input("Advance Bet (Periods)", value=int(st.session_state.sb_advance_x), min_value=0)
 
-st.sidebar.markdown("### ⚙️ Constraints")
+st.sidebar.markdown("### Constraints")
 sb_streak = st.sidebar.number_input("Streak Trigger", value=int(st.session_state.sb_streak), min_value=1)
 sb_max_l = st.sidebar.number_input("Max Sequence Steps", value=int(st.session_state.sb_max_l), min_value=1)
 sb_strat = st.sidebar.selectbox("Strategy Type", ["Follow Streak", "Anti-Streak (Bet Opp)"], index=0 if st.session_state.sb_strat == "Follow Streak" else 1)
@@ -179,27 +179,27 @@ safety_floor_pct = st.sidebar.slider("Safety Floor (%)", 0, 100, 20)
 
 # --- 7. APP MODES ---
 if mode == "Backtest & Optimize":
-    st.title("📊 CSV Backtest & Optimization")
+    st.title("CSV Backtest & Optimization")
     
     actual_mult = (100 / sb_share_price) * (1 - (sb_fee_pct / 100))
     
     if sb_scale_bet:
         calc_bet = sb_bankroll * (sb_init_bet / 100)
-        st.info(f"📈 **Compounding Active:** Your first bet will be **${calc_bet:,.2f}** ({sb_init_bet}% of ${sb_bankroll:,.0f}). After every winning sequence, this dollar amount will recalculate and increase to match your growing bankroll.")
+        st.info(f"[Mode] Compounding Active: Your first bet will be ${calc_bet:,.2f} ({sb_init_bet}% of ${sb_bankroll:,.0f}). After every winning sequence, this dollar amount will recalculate and increase to match your growing bankroll.")
     else:
-        st.info(f"⚖️ **Fixed Base Active:** Your base bet will remain a flat **${sb_init_bet:,.2f}** regardless of how large your bankroll grows.")
+        st.info(f"[Mode] Fixed Base Active: Your base bet will remain a flat ${sb_init_bet:,.2f} regardless of how large your bankroll grows.")
 
     c1, c2 = st.columns(2)
     with c1:
         num_f = st.number_input("Data Points to Load", 500, 100000, 2000)
-        if st.button("📂 Load CSV Data", use_container_width=True):
+        if st.button("Load CSV Data", use_container_width=True):
             st.session_state.stored_df = load_historical_data(num_f)
     
     with c2:
-        if st.button("🚀 Optimize Strategy", use_container_width=True):
+        if st.button("Optimize Strategy", use_container_width=True):
             if st.session_state.stored_df is not None and not st.session_state.stored_df.empty:
                 
-                st.markdown("### ⚙️ Optimizer Running...")
+                st.markdown("### Optimizer Running...")
                 progress_bar = st.progress(0)
                 
                 ui_container = st.container()
@@ -214,9 +214,8 @@ if mode == "Backtest & Optimize":
                 streaks_to_test = range(3, 6) 
                 doubles_to_test = range(1, 4)
                 
-                # --- UPDATED OPTIMIZER ARRAY HERE ---
                 if sb_scale_bet:
-                    # Now tests 0.25%, 0.5%, 1%, 1.5%, 2%
+                    # Tests 0.25%, 0.5%, 1%, 1.5%, 2%
                     bets_to_test = [0.25, 0.5, 1.0, 1.5, 2.0]
                     bet_label = "Base Bet (%)"
                 else:
@@ -233,8 +232,8 @@ if mode == "Backtest & Optimize":
                             display_b = f"{b}%" if sb_scale_bet else f"${b:,.2f}"
 
                             with live_placeholder.container():
-                                st.info(f"**Test {current_run}/{total_runs}**")
-                                st.write(f"🔹 **Streak:** {s} | **{bet_label}:** {display_b} | **Max Seq:** {l}")
+                                st.info(f"Test {current_run}/{total_runs}")
+                                st.write(f"- Streak: {s} | {bet_label}: {display_b} | Max Seq: {l}")
 
                             _, w, lo, ml, final, m_bank, mdd, _, _ = run_simulation(
                                 st.session_state.stored_df, sb_bankroll, b, sb_scale_bet, s, l, 
@@ -262,14 +261,14 @@ if mode == "Backtest & Optimize":
                                 table_placeholder.dataframe(display_df, use_container_width=True, hide_index=True)
                                 
                                 with live_placeholder.container():
-                                    st.info(f"**Test {current_run}/{total_runs}**")
-                                    st.write(f"🔹 **Streak:** {s} | **{bet_label}:** {display_b} | **Max Seq:** {l}")
-                                    st.success(f"✅ Survived! Profit: ${profit:,.2f}")
+                                    st.info(f"Test {current_run}/{total_runs}")
+                                    st.write(f"- Streak: {s} | {bet_label}: {display_b} | Max Seq: {l}")
+                                    st.success(f"[OK] Survived! Profit: ${profit:,.2f}")
                             else:
                                 with live_placeholder.container():
-                                    st.info(f"**Test {current_run}/{total_runs}**")
-                                    st.write(f"🔹 **Streak:** {s} | **{bet_label}:** {display_b} | **Max Seq:** {l}")
-                                    st.error("💥 Result: BUSTED")
+                                    st.info(f"Test {current_run}/{total_runs}")
+                                    st.write(f"- Streak: {s} | {bet_label}: {display_b} | Max Seq: {l}")
+                                    st.error("[FAILED] Result: BUSTED")
                             
                             progress_bar.progress(current_run / total_runs)
                             time.sleep(0.01)
@@ -284,17 +283,17 @@ if mode == "Backtest & Optimize":
                         "L": int(best_row["Max Sequence"]), "P": float(best_row["Profit"]), 
                         "DD": float(best_row["Max DD"])
                     }
-                    st.success("🎉 Optimization Complete!")
+                    st.success("[Success] Optimization Complete!")
                 else: 
                     st.session_state.best_params_found = "None"
-                    st.error("No strategies survived the constraints.")
-            else: st.warning("⚠️ Please load CSV data first!")
+                    st.error("[Warning] No strategies survived the constraints.")
+            else: st.warning("[Warning] Please load CSV data first!")
 
     if st.session_state.best_params_found is not None:
         if not isinstance(st.session_state.best_params_found, str):
             best = st.session_state.best_params_found
-            st.success(f"🏆 Best Found: Profit **${best['P']:,.2f}** | Max DD: **${best['DD']:,.2f}**")
-            if st.button("✅ USE THESE PARAMETERS", use_container_width=True):
+            st.success(f"[Best Found] Profit ${best['P']:,.2f} | Max DD: ${best['DD']:,.2f}")
+            if st.button("USE THESE PARAMETERS", use_container_width=True):
                 st.session_state.sb_init_bet = best['B']
                 st.session_state.sb_streak = best['S']
                 st.session_state.sb_max_l = best['L']
@@ -308,8 +307,8 @@ if mode == "Backtest & Optimize":
         )
         if res_df is not None and not res_df.empty:
             
-            is_busted = "💥 BUSTED" in res_df.iloc[-1]['Action']
-            if is_busted: st.error("💥 ACCOUNT BUSTED - Strategy ran out of funds.")
+            is_busted = "[BUSTED]" in res_df.iloc[-1]['Action']
+            if is_busted: st.error("[CRITICAL] ACCOUNT BUSTED - Strategy ran out of funds.")
             
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Final Bankroll", f"${final:,.2f}")
@@ -322,8 +321,8 @@ if mode == "Backtest & Optimize":
             fig.update_layout(template="plotly_dark")
             st.plotly_chart(fig, width='stretch')
             
-            with st.expander("📄 View Raw Data Log"): st.dataframe(res_df.iloc[::-1], width='stretch')
-            with st.expander("📊 View Streak Distribution Analysis"):
+            with st.expander("View Raw Data Log"): st.dataframe(res_df.iloc[::-1], width='stretch')
+            with st.expander("View Streak Distribution Analysis"):
                 s = st.session_state.stored_df['Outcome']
                 streak_groups = (s != s.shift()).cumsum()
                 streak_lengths = s.groupby(streak_groups).size()
@@ -345,7 +344,7 @@ if mode == "Backtest & Optimize":
 
 # --- LIVE MODE (Simulator) ---
 else:
-    st.title("⚡ Live Strategy Simulator")
+    st.title("Live Strategy Simulator")
     st.caption("Simulating live trading by stepping through CSV data every 5 seconds.")
     
     def get_live_base_bet(current_br):
@@ -354,7 +353,7 @@ else:
     if 'sim_index' not in st.session_state: st.session_state.sim_index = 0
     
     if not st.session_state.live_active:
-        if st.button("🚀 ACTIVATE LIVE SIMULATOR"):
+        if st.button("ACTIVATE LIVE SIMULATOR"):
             st.session_state.live_active, st.session_state.live_bankroll = True, sb_bankroll
             
             base_bet = get_live_base_bet(sb_bankroll)
@@ -366,15 +365,15 @@ else:
             st.session_state.live_resolve_in = 0
             st.session_state.sim_index = 100; st.rerun()
     else:
-        if st.button("🛑 DEACTIVATE"): st.session_state.live_active = False; st.rerun()
+        if st.button("DEACTIVATE"): st.session_state.live_active = False; st.rerun()
 
     if st.session_state.live_active:
         st.info("Simulation running... Advancing one candle every 5 seconds.")
         full_data = load_historical_data(100000)
         
-        if full_data.empty: st.error("Cannot run simulation. CSV not loaded.")
+        if full_data.empty: st.error("[Error] Cannot run simulation. CSV not loaded.")
         elif st.session_state.sim_index >= len(full_data):
-            st.warning("End of CSV data reached."); st.session_state.live_active = False
+            st.warning("[Info] End of CSV data reached."); st.session_state.live_active = False
         else:
             live_data = full_data.iloc[st.session_state.sim_index-20 : st.session_state.sim_index]
             latest = live_data.iloc[-1]
@@ -427,7 +426,7 @@ else:
                         st.session_state.live_resolve_in = sb_advance_x + 1
                         
                         if st.session_state.live_bankroll < st.session_state.live_current_bet:
-                            action = "💥 BUSTED"
+                            action = "[BUSTED]"
                             st.session_state.live_active = False 
                         else:
                             st.session_state.live_bankroll -= st.session_state.live_current_bet
@@ -443,7 +442,7 @@ else:
             
             if st.session_state.live_history:
                 st.plotly_chart(px.line(pd.DataFrame(st.session_state.live_history), x="Time", y="Bankroll", title="Live Session Performance"))
-                with st.expander("📄 View Live Session Logs"): st.dataframe(pd.DataFrame(st.session_state.live_history).iloc[::-1], width='stretch')
+                with st.expander("View Live Session Logs"): st.dataframe(pd.DataFrame(st.session_state.live_history).iloc[::-1], width='stretch')
             
             if st.session_state.live_active:
                 st.session_state.sim_index += 1; time.sleep(5); st.rerun()
