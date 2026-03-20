@@ -206,7 +206,7 @@ if mode == "Backtest & Optimize":
                                 sb_strat, sb_share_price, sb_fee_pct, sb_bet_sizing, sb_advance_x
                             )
                             
-                            profit = final - sb_bankroll if final is else -sb_bankroll
+                            profit = final - sb_bankroll if final is not None else -sb_bankroll
                             
                             # 3. Update Table and Monitor AFTER simulation
                             if m_bank is not None and m_bank >= (sb_bankroll * (safety_floor_pct/100)) and mdd <= max_dd_allowed:
